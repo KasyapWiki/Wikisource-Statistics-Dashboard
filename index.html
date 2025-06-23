@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wikisource Statistics Dashboard</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom styles for smoother transitions */
+        .tab-button {
+            transition: all 0.2s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    <div id="app" class="min-h-screen p-6">
+        <!-- Content will be rendered here by JavaScript -->
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="text-blue-600 text-lg font-medium">Loading Wikisource statistics...</div>
+        </div>
+    </div>
+
+    <script>
+        // Global state object to manage application data and UI state
+        const state = {
+            selectedLanguage: 'hi', // Default to Hindi
+            selectedTimeframe: 'alltime', // Timeframe will mostly affect labels as API provides all-time stats
+            activeTab: 'indianInsights', // Default to Indian Language Insights tab
+            statsData: {}, // Stores fetched statistics for each language
+            loading: true, // Loading indicator
+            error: null, // Error message
+            charts: {} // Stores Chart.js instances for proper destruction and re-rendering
+        };
+
+        // Define Indian languages prominently
+        // Removed languages that consistently fail to fetch from wikisource.org subdomains
+        const indianLanguages = [
+            { code: 'hi', name: 'Hindi', flag: '🇮🇳' },
+            { code: 'bn', name: 'Bengali', flag: '🇮🇳' },
+            { code: 'te', name: 'Telugu', flag: '🇮🇳' },
+            { code: 'ta', name: 'Tamil', flag: '🇮🇳' },
+            { code: 'gu', name: 'Gujarati', flag: '🇮🇳' },
+            { code: 'kn', name: 'Kannada', flag: '🇮🇳' },
+            { code: 'ml', name: 'Malayalam', flag: '🇮🇳' },
+            { code: 'mr', name: 'Marathi', flag: '🇮🇳' },
+            { code: 'pa', name: 'Punjabi', flag: '🇮🇳' },
+            { code: 'or', name: 'Odia', flag: '🇮🇳' },
+            { code: 'as', name: 'Assamese', flag: '🇮🇳' },
+            { code: 'sa', name: 'Sanskrit', flag: '🇮🇳' },
+            // Languages below were causing "Failed to fetch" errors, indicating their wikisource.org subdomains
+            // might not be active or directly accessible via API for statistics.
+            // { code: 'ur', name: 'Urdu', flag: '🇮🇳' },
+            // { code: 'ks', name: 'Kashmiri', flag: '🇮🇳' },
+            // { code: 'kok', name: 'Konkani', flag: '🇮🇳' },
+            // { code: 'mai', name: 'Maithili', flag: '🇮🇳' },
+            // { code: 'ne', name: 'Nepali', flag: '🇳🇵' }, // Nepali (relevant for Indian context)
+        ];
+
+        const otherLanguages = [
+            { code: 'en', name: 'English', flag: '🇺🇸' },
+            { code: 'fr', name: 'French', flag: '🇫🇷' },
+            { code: 'de', name: 'German', flag: '🇩🇪' },
+            { code: 'es', name: 'Spanish', flag: '🇪🇸' },
+            { code: 'it', name: 'Italian', flag: '🇮🇹' },
+            { code: 'pt', name: 'Portuguese', flag: '🇵🇹' },
+            { code: 'ru', name: 'Russian', flag: '🇷🇺' },
+            { code: 'zh', name: 'Chinese', flag: '🇨🇳' },
+        ];
+
+        // Combine all languages for the dropdown
+        const languages = [...indianLanguages, ...otherLanguages];
+
+        // Timeframe options (note: actual API typically provides all-time stats)
+        const timeframes = [
+            { value: 'alltime', label: 'All time' },
+            { value: 'lastmonth', label: 'Last 30 days' } // Active users often available for this
+        ];
+
+        // SVG Icons (simplified versions of Lucide icons)
+        // These are inline SVG for minimal dependencies
+        const icons = {
+            BookOpen: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`,
+            Users: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13V2"/><path d="M23 7V2"/><path d="M12 11h-1"/></svg>`,
+            FileText: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>`,
+            CheckCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
+            AlertCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+            Clock: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
+            Globe: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20a14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>`,
+            TrendingUp: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>`,
+            Database: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg>`,
+            IndianRupee: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-4 h-4"><path d="M6 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M10 8h4"/><path d="M10 12h4"/><path d="M10 16h4"/></svg>`,
+            MessageCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8l-2.5 2.5a2 2 0 0 1-2.8 0l-2.5-2.5a8.38 8.38 0 0 1-3.8-.9c-.6-.2-1.2-.4-1.8-.4a8.38 8.38 0 0 1-3.8.9l-2.5 2.5a2 2 0 0 1-2.8 0l-2.5-2.5a8.38 8.38 0 0 1-.9-3.8c-.2-.6-.4-1.2-.4-1.8a8.38 8.38 0 0 1 .9-3.8l2.5-2.5a2 2 0 0 1 2.8 0l2.5 2.5c.6.2 1.2.4 1.8.4a8.38 8.38 0 0 1 3.8-.9l2.5-2.5a2 2 0 0 1 2.8 0l2.5 2.5a8.38 8.38 0 0 1 .9 3.8z"/></svg>`,
+            GitPullRequest: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M18 11v7"/><path d="M6 9v4a2 2 0 0 0 2 2h7"/></svg>`,
+            Award: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6"><circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.89"/></svg>`,
+            Lightbulb: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 6c0 1.3.5 2.6 1.5 3.5.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 22v-4"/></svg>`
+        };
+
+        /**
+         * Helper function to generate HTML for a statistic card.
+         * @param {string} title - The title of the statistic.
+         * @param {number|string} value - The value of the statistic.
+         * @param {string} iconSvg - SVG string for the icon.
+         * @param {string} [color='blue'] - Tailwind color class for the card border and icon.
+         * @param {string} [subtitle=''] - Optional subtitle for the card.
+         * @returns {string} HTML string for the StatCard.
+         */
+        function renderStatCard(title, value, iconSvg, color = 'blue', subtitle = '') {
+            return `
+                <div class="bg-white rounded-lg shadow-md p-6 border-l-4" style="border-left-color: ${color};">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">${title}</p>
+                            <p class="text-2xl font-bold text-gray-900">${(value !== undefined && value !== null) ? value.toLocaleString() : 'N/A'}</p>
+                            ${subtitle ? `<p class="text-sm text-gray-500">${subtitle}</p>` : ''}
+                        </div>
+                        <div class="p-3 rounded-full" style="background-color: ${color}20;">
+                            ${iconSvg}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Destroys all active Chart.js instances to prevent memory leaks and issues on re-render.
+         */
+        function destroyCharts() {
+            for (const chartId in state.charts) {
+                if (state.charts[chartId]) {
+                    state.charts[chartId].destroy();
+                }
+            }
+            state.charts = {}; // Clear the charts object
+        }
+
+        /**
+         * Creates and stores a new Chart.js instance.
+         * @param {string} canvasId - The ID of the canvas element.
+         * @param {string} type - The type of chart (e.g., 'bar', 'pie', 'line').
+         * @param {object} data - The data object for the chart.
+         * @param {object} options - The options object for the chart.
+         */
+        function createChart(canvasId, type, data, options) {
+            const ctx = document.getElementById(canvasId);
+            if (ctx) {
+                // Ensure any existing chart on this canvas is destroyed before creating a new one
+                if (state.charts[canvasId]) {
+                    state.charts[canvasId].destroy();
+                }
+                const newChart = new Chart(ctx, { type, data, options });
+                state.charts[canvasId] = newChart; // Store the new chart instance
+            }
+        }
+
+        /**
+         * Renders the content for the "Overview" tab.
+         * Displays key statistics using StatCards.
+         */
+        function renderOverview() {
+            // Get statistics for the currently selected language, fallback to Hindi if not found
+            const currentStats = state.statsData[state.selectedLanguage] || state.statsData.hi;
+
+            if (!currentStats || Object.keys(currentStats).length === 0) {
+                return `<div class="text-gray-500 text-center py-8">No data available for this language. Please try another.</div>`;
+            }
+
+            // Generate HTML for the overview section
+            const html = `
+                <div class="space-y-6">
+                    <!-- Key Metrics -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                        ${renderStatCard("Total Articles (Texts)", currentStats.totalTexts, icons.FileText, "#3b82f6", `Total content pages`)}
+                        ${renderStatCard("Total Registered Users", currentStats.authors, icons.Users, "#22c55e", `All time`)}
+                        ${renderStatCard("Active Users", currentStats.activeUsers, icons.TrendingUp, "#ef4444", "Last 30 days")}
+                        ${renderStatCard("Total Edits", currentStats.recentEdits, icons.MessageCircle, "#6366f1", "All time edits")}
+                    </div>
+
+                    <!-- Additional simplified stats (most detailed metrics removed due to API limitations) -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        ${renderStatCard("Total Pages", currentStats.pages, icons.Database, "#a855f7", "Includes talk, special pages, etc.")}
+                        ${renderStatCard("Administrators", currentStats.administrators, icons.Users, "#06b6d4", "Site administrators")}
+                        ${renderStatCard("Estimated Books", currentStats.totalBooks, icons.BookOpen, "#f59e0b", "Approximation based on articles")}
+                    </div>
+
+                    <!-- Charts for Overview - Simplified due to API limitations -->
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4">Core Statistics Overview</h3>
+                        <div style="height: 350px;"><canvas id="coreStatsChart"></canvas></div>
+                    </div>
+                </div>
+            `;
+
+            // Charts for Overview tab (created after HTML is in DOM)
+            setTimeout(() => {
+                const overviewChartData = [
+                    { name: 'Total Articles', value: currentStats.totalTexts },
+                    { name: 'Total Users', value: currentStats.authors },
+                    { name: 'Active Users', value: currentStats.activeUsers },
+                    { name: 'Total Edits', value: currentStats.recentEdits },
+                    { name: 'Total Pages', value: currentStats.pages }
+                ];
+                createChart('coreStatsChart', 'bar', {
+                    labels: overviewChartData.map(d => d.name),
+                    datasets: [{
+                        label: 'Count',
+                        data: overviewChartData.map(d => d.value),
+                        backgroundColor: ['#3b82f6', '#22c55e', '#ef4444', '#6366f1', '#a855f7'],
+                        borderColor: ['#3b82f6', '#22c55e', '#ef4444', '#6366f1', '#a855f7'],
+                        borderWidth: 1
+                    }]
+                }, {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { callback: function(value) { return value.toLocaleString(); } }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return `${context.dataset.label}: ${context.parsed.y.toLocaleString()}`;
+                                }
+                            }
+                        }
+                    }
+                });
+            }, 0);
+
+            return html;
+        }
+
+        /**
+         * Renders the content for the "Books" tab.
+         * Displays simplified book-related statistics.
+         * Note: Detailed book validation/correction status not available via API.
+         */
+        function renderBooks() {
+            const currentStats = state.statsData[state.selectedLanguage] || state.statsData.hi;
+            if (!currentStats || Object.keys(currentStats).length === 0) {
+                return `<div class="text-gray-500 text-center py-8">No data available for this language. Please try another.</div>`;
+            }
+
+            // Simplified data for books as detailed validation stats are not in API
+            const bookStatusData = [
+                { name: 'Total Articles', value: currentStats.totalTexts, color: '#3b82f6' },
+                { name: 'Estimated Books', value: currentStats.totalBooks, color: '#22c55e' }
+            ];
+
+            const html = `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        ${renderStatCard("Total Articles (Texts)", currentStats.totalTexts, icons.FileText, "#3b82f6", "All content texts")}
+                        ${renderStatCard("Estimated Books", currentStats.totalBooks, icons.BookOpen, "#22c55e", "Approximation")}
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4">Article and Estimated Book Count</h3>
+                        <div style="height: 300px;"><canvas id="bookArticleBarChart"></canvas></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6 text-gray-600">
+                        <p><strong>Note:</strong> Detailed statistics on "Finished Books", "Books to Validate", or "Books to Correct" are not directly available via the standard Wikimedia API. The "Estimated Books" count is a simplification.</p>
+                    </div>
+                </div>
+            `;
+
+            setTimeout(() => {
+                createChart('bookArticleBarChart', 'bar', {
+                    labels: bookStatusData.map(d => d.name),
+                    datasets: [{
+                        label: 'Count',
+                        data: bookStatusData.map(d => d.value),
+                        backgroundColor: bookStatusData.map(d => d.color),
+                        borderColor: bookStatusData.map(d => d.color),
+                        borderWidth: 1
+                    }]
+                }, {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true, ticks: { callback: function(value) { return value.toLocaleString(); } } } },
+                    plugins: { tooltip: { callbacks: { label: function(context) { return `${context.dataset.label}: ${context.parsed.y.toLocaleString()}`; } } } }
+                });
+            }, 0);
+            return html;
+        }
+
+        /**
+         * Renders the content for the "Pages" tab.
+         * Displays simplified page-related statistics.
+         * Note: Detailed page quality/validation status not available via API.
+         */
+        function renderPages() {
+            const currentStats = state.statsData[state.selectedLanguage] || state.statsData.hi;
+            if (!currentStats || Object.keys(currentStats).length === 0) {
+                return `<div class="text-gray-500 text-center py-8">No data available for this language. Please try another.</div>`;
+            }
+
+            const pageData = [
+                { name: 'Total Pages', value: currentStats.pages, color: '#3b82f6' },
+                { name: 'Content Articles', value: currentStats.totalTexts, color: '#22c55e' }
+            ];
+
+            const html = `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        ${renderStatCard("Total Pages", currentStats.pages, icons.Database, "#3b82f6", "All pages on the wiki")}
+                        ${renderStatCard("Content Articles", currentStats.totalTexts, icons.FileText, "#22c55e", "Main content texts")}
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4">Total Pages vs. Content Articles</h3>
+                        <div style="height: 300px;"><canvas id="pagesVsArticlesChart"></canvas></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6 text-gray-600">
+                        <p><strong>Note:</strong> Detailed page quality metrics (Validated, Corrected, Problem, Uncorrected, Empty) are specific to Wikisource's ProofreadPage extension and are not available via the standard Wikimedia API endpoint used here. This section displays general page counts.</p>
+                    </div>
+                </div>
+            `;
+            setTimeout(() => {
+                createChart('pagesVsArticlesChart', 'bar', {
+                    labels: pageData.map(d => d.name),
+                    datasets: [{
+                        label: 'Count',
+                        data: pageData.map(d => d.value),
+                        backgroundColor: pageData.map(d => d.color),
+                        borderColor: pageData.map(d => d.color),
+                        borderWidth: 1
+                    }]
+                }, {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true, ticks: { callback: function(value) { return value.toLocaleString(); } } } },
+                    plugins: { tooltip: { callbacks: { label: function(context) { return `${context.dataset.label}: ${context.parsed.y.toLocaleString()}`; } } } }
+                });
+            }, 0);
+            return html;
+        }
+
+        /**
+         * Renders the content for the "Users" tab.
+         * Displays available user statistics.
+         * Note: Detailed user roles (bureaucrats, patrollers, bots) not available via API.
+         */
+        function renderUsers() {
+            const currentStats = state.statsData[state.selectedLanguage] || state.statsData.hi;
+            if (!currentStats || Object.keys(currentStats).length === 0) {
+                return `<div class="text-gray-500 text-center py-8">No data available for this language. Please try another.</div>`;
+            }
+
+            const userStatsData = [
+                { name: 'Total Registered Users', value: currentStats.authors, color: '#3b82f6' },
+                { name: 'Active Users (30 Days)', value: currentStats.activeUsers, color: '#22c55e' },
+                { name: 'Administrators', value: currentStats.administrators, color: '#ef4444' }
+            ];
+
+            const html = `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        ${renderStatCard("Total Registered Users", currentStats.authors, icons.Users, "#3b82f6", "All time")}
+                        ${renderStatCard("Active Users", currentStats.activeUsers, icons.Users, "#22c55e", "Last 30 days")}
+                        ${renderStatCard("Administrators", currentStats.administrators, icons.Users, "#ef4444", "Users with admin privileges")}
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4">User Statistics Overview</h3>
+                        <div style="height: 300px;"><canvas id="userStatsBarChart"></canvas></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-6 text-gray-600">
+                        <p><strong>Note:</strong> Counts for specific user roles like Bureaucrats, Patrollers, Auto-patrolled users, and Bots are not readily available via the standard Wikimedia API endpoint used here. This section displays general user statistics.</p>
+                    </div>
+                </div>
+            `;
+            setTimeout(() => {
+                createChart('userStatsBarChart', 'bar', {
+                    labels: userStatsData.map(d => d.name),
+                    datasets: [{
+                        label: 'Count',
+                        data: userStatsData.map(d => d.value),
+                        backgroundColor: userStatsData.map(d => d.color),
+                        borderColor: userStatsData.map(d => d.color),
+                        borderWidth: 1
+                    }]
+                }, {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: true, ticks: { callback: function(value) { return value.toLocaleString(); } } } },
+                    plugins: { tooltip: { callbacks: { label: function(context) { return `${context.dataset.label}: ${context.parsed.y.toLocaleString()}`; } } } }
+                });
+            }, 0);
+            return html;
+        }
+
+        /**
+         * Renders the "Indian Language Insights" tab content.
+         * Compares key stats across Indian languages.
+         * Note: Some detailed stats and growth trends removed due to API limitations.
+         */
+        function renderIndianLanguageInsights() {
+            const selectedLangName = languages.find(lang => lang.code === state.selectedLanguage)?.name || 'Selected';
+
+            // Data for comparison charts: Total Articles & Active Users across Indian languages
+            // Filter out languages for which data fetch failed (data is null)
+            const availableIndianLanguages = indianLanguages.filter(lang => state.statsData[lang.code]);
+
+            const totalArticlesComparisonData = availableIndianLanguages.map(lang => ({
+                name: lang.name,
+                value: state.statsData[lang.code]?.totalTexts || 0,
+            })).sort((a, b) => b.value - a.value);
+
+            const activeUsersComparisonData = availableIndianLanguages.map(lang => ({
+                name: lang.name,
+                value: state.statsData[lang.code]?.activeUsers || 0,
+            })).sort((a, b) => b.value - a.value);
+
+            // Simplified highlighted stats for the selected Indian language
+            const currentSelectedIndianStats = state.statsData[state.selectedLanguage];
+
+            const html = `
+                <div class="space-y-6">
+                    <h2 class="text-2xl font-bold text-gray-800">Deep Dive: Indian Language Wikisources</h2>
+                    <p class="text-gray-600">Explore key performance indicators and comparisons among Indian language Wikisource projects.</p>
+
+                    <!-- Comparison Charts -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="bg-white rounded-lg shadow-md p-6">
+                            <h3 class="text-lg font-semibold mb-4">Total Articles Across Indian Languages</h3>
+                            <div style="height: 350px;"><canvas id="totalArticlesComparisonChart"></canvas></div>
+                        </div>
+
+                        <div class="bg-white rounded-lg shadow-md p-6">
+                            <h3 class="text-lg font-semibold mb-4">Active Users Across Indian Languages (Last 30 Days)</h3>
+                            <div style="height: 350px;"><canvas id="activeUsersComparisonChart"></canvas></div>
+                        </div>
+                    </div>
+
+                    <!-- Specific Highlights for Selected Indian Language -->
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-xl font-semibold mb-4">Highlights for ${selectedLangName} Wikisource</h3>
+                        ${currentSelectedIndianStats ? `
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                ${renderStatCard("Total Articles", currentSelectedIndianStats.totalTexts, icons.FileText, "#3b82f6", "Content pages available")}
+                                ${renderStatCard("Total Registered Users", currentSelectedIndianStats.authors, icons.Users, "#ef4444", "All time users")}
+                                ${renderStatCard("Active Users", currentSelectedIndianStats.activeUsers, icons.TrendingUp, "#22c55e", "Last 30 days")}
+                            </div>
+                        ` : `<p class="text-gray-500">Select an Indian language to see specific highlights, or data is unavailable.</p>`}
+                    </div>
+
+                    <!-- Key Focus Areas / Challenges & Opportunities -->
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4 flex items-center gap-2">
+                            ${icons.Lightbulb}
+                            Key Focus Areas for Indian Wikisources
+                        </h3>
+                        <ul class="list-disc list-inside text-gray-700 space-y-2">
+                            <li><strong>Community Building:</strong> Many Indian languages have smaller active user bases. Strategies for recruitment and retention are crucial.</li>
+                            <li><strong>Content Digitization:</strong> A vast amount of Indian literature is yet to be digitized. Focusing on priority works can significantly boost text counts.</li>
+                            <li><strong>Proofreading Campaigns:</strong> Organizing sustained proofreading campaigns can help address the large volume of unvalidated and uncorrected pages.</li>
+                            <li><strong>Technical Support:</strong> Providing technical guidance and support in local languages can help new users navigate the platform.</li>
+                            <li><strong>Collaboration with Institutions:</strong> Partnering with libraries, universities, and cultural organizations can accelerate content contribution and validation.</li>
+                        </ul>
+                    </div>
+                </div>
+            `;
+
+            setTimeout(() => {
+                createChart('totalArticlesComparisonChart', 'bar', {
+                    labels: totalArticlesComparisonData.map(d => d.name),
+                    datasets: [{
+                        label: 'Total Articles',
+                        data: totalArticlesComparisonData.map(d => d.value),
+                        backgroundColor: '#6366f1'
+                    }]
+                }, {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { ticks: { autoSkip: false, maxRotation: 45, minRotation: 45 } },
+                        y: { beginAtZero: true, ticks: { callback: function(value) { return value.toLocaleString(); } } }
+                    },
+                    plugins: { tooltip: { callbacks: { label: function(context) { return `${context.dataset.label}: ${context.parsed.y.toLocaleString()}`; } } } }
+                });
+
+                createChart('activeUsersComparisonChart', 'bar', {
+                    labels: activeUsersComparisonData.map(d => d.name),
+                    datasets: [{
+                        label: 'Active Users',
+                        data: activeUsersComparisonData.map(d => d.value),
+                        backgroundColor: '#06b6d4'
+                    }]
+                }, {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: { ticks: { autoSkip: false, maxRotation: 45, minRotation: 45 } },
+                        y: { beginAtZero: true, ticks: { callback: function(value) { return value.toLocaleString(); } } }
+                    },
+                    plugins: { tooltip: { callbacks: { label: function(context) { return `${context.dataset.label}: ${context.parsed.y.toLocaleString()}`; } } } }
+                });
+            }, 0);
+            return html;
+        }
+
+        /**
+         * Main render function to update the entire application UI based on the current state.
+         */
+        function renderApp() {
+            const appDiv = document.getElementById('app');
+            if (state.loading) {
+                appDiv.innerHTML = `
+                    <div class="flex items-center justify-center min-h-screen">
+                        <div class="text-blue-600 text-lg font-medium">Loading Wikisource statistics...</div>
+                    </div>
+                `;
+                return;
+            }
+
+            if (state.error) {
+                appDiv.innerHTML = `
+                    <div class="flex items-center justify-center min-h-screen">
+                        <div class="text-red-600 text-lg font-medium">${state.error}</div>
+                    </div>
+                `;
+                return;
+            }
+
+            // Destroy all charts before re-rendering the HTML to prevent conflicts
+            destroyCharts();
+
+            const selectedLanguageInfo = languages.find(lang => lang.code === state.selectedLanguage);
+
+            appDiv.innerHTML = `
+                <div class="max-w-7xl mx-auto">
+                    <!-- Header -->
+                    <div class="mb-8">
+                        <h1 class="text-3xl font-bold text-gray-900 mb-2">Wikisource Statistics Dashboard</h1>
+                        <p class="text-gray-600">Comprehensive statistics for Wikisource projects with a focus on Indian languages</p>
+                    </div>
+
+                    <!-- Language and Timeframe Selectors -->
+                    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                        <div class="flex flex-wrap items-center gap-4">
+                            <div class="flex items-center gap-2">
+                                ${icons.Globe}
+                                <label for="language-select" class="text-sm font-medium text-gray-700">Language:</label>
+                                <select
+                                    id="language-select"
+                                    class="border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[200px] rounded-md"
+                                >
+                                    <optgroup label="Indian Languages">
+                                        ${indianLanguages.map(lang => `<option value="${lang.code}" ${state.selectedLanguage === lang.code ? 'selected' : ''}>${lang.flag} ${lang.name}</option>`).join('')}
+                                    </optgroup>
+                                    <optgroup label="Other Languages">
+                                        ${otherLanguages.map(lang => `<option value="${lang.code}" ${state.selectedLanguage === lang.code ? 'selected' : ''}>${lang.flag} ${lang.name}</option>`).join('')}
+                                    </optgroup>
+                                </select>
+                            </div>
+
+                            <div class="flex items-center gap-2">
+                                ${icons.Clock}
+                                <label for="timeframe-select" class="text-sm font-medium text-gray-700">Timeframe:</label>
+                                <select
+                                    id="timeframe-select"
+                                    class="border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-md"
+                                >
+                                    ${timeframes.map(time => `<option value="${time.value}" ${state.selectedTimeframe === time.value ? 'selected' : ''}>${time.label}</option>`).join('')}
+                                </select>
+                            </div>
+
+                            <!-- Language Info Badge -->
+                            <div class="ml-auto">
+                                <div class="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                                    <span class="text-sm font-medium text-blue-800">
+                                        ${selectedLanguageInfo?.flag || ''} ${' '}
+                                        ${selectedLanguageInfo?.name || 'Unknown'} Wikisource
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Navigation Tabs -->
+                    <div class="bg-white rounded-lg shadow-md mb-6">
+                        <div class="border-b border-gray-200">
+                            <nav class="flex space-x-8 px-6">
+                                ${[
+                                    { id: 'overview', label: 'Overview', icon: icons.TrendingUp },
+                                    { id: 'books', label: 'Books', icon: icons.BookOpen },
+                                    { id: 'pages', label: 'Pages', icon: icons.FileText },
+                                    { id: 'users', label: 'Users', icon: icons.Users },
+                                    { id: 'indianInsights', label: 'Indian Language Insights', icon: icons.IndianRupee }
+                                ].map(tab => `
+                                    <button
+                                        id="tab-button-${tab.id}"
+                                        class="tab-button flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm rounded-t-md ${
+                                            state.activeTab === tab.id
+                                                ? 'border-blue-500 text-blue-600'
+                                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                        }"
+                                    >
+                                        ${tab.icon}
+                                        ${tab.label}
+                                    </button>
+                                `).join('')}
+                            </nav>
+                        </div>
+                    </div>
+
+                    <!-- Tab Content -->
+                    <div class="mb-8">
+                        ${state.activeTab === 'overview' ? renderOverview() : ''}
+                        ${state.activeTab === 'books' ? renderBooks() : ''}
+                        ${state.activeTab === 'pages' ? renderPages() : ''}
+                        ${state.activeTab === 'users' ? renderUsers() : ''}
+                        ${state.activeTab === 'indianInsights' ? renderIndianLanguageInsights() : ''}
+                    </div>
+
+                    <!-- Footer -->
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h3 class="text-lg font-semibold mb-4">External Tools & Resources</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <div class="p-4 border rounded-lg">
+                                <h4 class="font-medium mb-2">wsstats.toolforge.org</h4>
+                                <p class="text-sm text-gray-600">General statistics tool for Wikisource projects.</p>
+                            </div>
+                            <div class="p-4 border rounded-lg">
+                                <h4 class="font-medium mb-2">BookwormBot Reports</h4>
+                                <p class="text-sm text-gray-600">Daily reports on page processing by book.</p>
+                            </div>
+                            <div class="p-4 border rounded-lg">
+                                <h4 class="font-medium mb-2">Wikisource Community Portals</h4>
+                                <p class="text-sm text-gray-600">Discover community pages and discussions for different languages.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Add event listeners after rendering the main HTML
+            // This ensures the elements exist in the DOM when listeners are attached
+            document.getElementById('language-select').addEventListener('change', (e) => {
+                state.selectedLanguage = e.target.value;
+                fetchAndRenderStats(); // Re-fetch data for the new language
+            });
+
+            document.getElementById('timeframe-select').addEventListener('change', (e) => {
+                state.selectedTimeframe = e.target.value;
+                renderApp(); // Re-render to update labels, no re-fetch as base API is all-time
+            });
+
+            [
+                { id: 'overview' }, { id: 'books' }, { id: 'pages' }, { id: 'users' }, { id: 'indianInsights' }
+            ].forEach(tab => {
+                document.getElementById(`tab-button-${tab.id}`).addEventListener('click', () => {
+                    state.activeTab = tab.id;
+                    renderApp(); // Re-render to show the selected tab
+                });
+            });
+        }
+
+        /**
+         * Fetches statistics from the Wikimedia API for all relevant languages.
+         * Sets loading, error, and statsData state variables.
+         */
+        async function fetchAndRenderStats() {
+            state.loading = true;
+            state.error = null;
+            renderApp(); // Show loading state immediately
+
+            const languageCodesToFetch = new Set(indianLanguages.map(l => l.code));
+            if (!languageCodesToFetch.has(state.selectedLanguage)) {
+                languageCodesToFetch.add(state.selectedLanguage); // Ensure currently selected language is fetched
+            }
+
+            const fetchPromises = Array.from(languageCodesToFetch).map(async (langCode) => {
+                const apiUrl = `https://${langCode}.wikisource.org/w/api.php?action=query&meta=siteinfo&siprop=statistics|general&format=json&origin=*`;
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), 8000); // Set a timeout of 8 seconds
+
+                try {
+                    const response = await fetch(apiUrl, { signal: controller.signal });
+                    clearTimeout(id); // Clear the timeout if fetch succeeds
+
+                    if (!response.ok) {
+                        // Throw an error if the HTTP response status is not OK (e.g., 404, 500)
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    const data = await response.json();
+                    
+                    // Check if 'query' and 'statistics' exist in the response
+                    if (!data.query || !data.query.statistics) {
+                        throw new Error('Invalid API response structure: missing query or statistics data.');
+                    }
+
+                    const siteinfo = data.query.statistics;
+                    
+                    // For the total pages count, use pages (includes non-content pages)
+                    // For total texts, use articles (content pages)
+                    const totalPages = siteinfo.pages || 0;
+                    const totalArticles = siteinfo.articles || 0;
+                    const totalUsers = siteinfo.users || 0;
+                    const activeUsers = siteinfo.activeusers || 0;
+                    const totalEdits = siteinfo.edits || 0;
+                    const administrators = siteinfo.administrators || 0;
+
+                    // Map API response to our simplified statsData structure
+                    // Many specific metrics from the original simulated data are not directly available
+                    // via this API endpoint and thus are removed or approximated.
+                    return {
+                        langCode,
+                        data: {
+                            pages: totalPages, // Total number of pages
+                            totalTexts: totalArticles, // Number of content articles (corresponds to texts)
+                            authors: totalUsers, // Total registered users
+                            activeUsers: activeUsers, // Users who have performed an action in the last 30 days
+                            recentEdits: totalEdits, // Total number of edits
+                            administrators: administrators, // Number of administrators
+                            totalBooks: Math.floor(totalArticles / 10), // A very rough estimation, no direct API for this
+                            // The following metrics from original simulated data are NOT available via this API:
+                            // pageMode, validatedTexts, correctedTexts, authorsWithoutTexts, finishedBooks,
+                            // booksToValidate, booksToCorrect, validatedPages, correctedPages, problemPages,
+                            // uncorrectedPages, emptyPages, newAuthors, newTexts, qualityLevels, growth.
+                            // They would require more complex API calls or specific toolforge APIs.
+                        }
+                    };
+                } catch (err) {
+                    clearTimeout(id); // Ensure timeout is cleared even on error
+                    let errorMessage = `Error fetching data for ${langCode}`;
+                    if (err.name === 'AbortError') {
+                        errorMessage += ` due to timeout (8 seconds). It might be that a Wikisource project for this language does not exist or is currently offline.`;
+                    } else if (err.message.includes('HTTP error!')) {
+                        errorMessage += `: ${err.message}. This could indicate a server issue or an invalid project subdomain.`;
+                    } else {
+                        errorMessage += `: ${err.message}.`;
+                    }
+                    console.error(`${errorMessage} URL: ${apiUrl}`, err);
+                    // Return null data for this language if fetching fails, so others can still load
+                    return { langCode, data: null };
+                }
+            });
+
+            try {
+                const results = await Promise.all(fetchPromises);
+                const newStatsData = {};
+                const failedLanguages = [];
+                results.forEach(result => {
+                    if (result.data) {
+                        newStatsData[result.langCode] = result.data;
+                    } else {
+                        // Collect languages for which fetching failed
+                        failedLanguages.push(languages.find(l => l.code === result.langCode)?.name || result.langCode);
+                    }
+                });
+                state.statsData = newStatsData;
+
+                if (failedLanguages.length > 0) {
+                    state.error = `Could not load statistics for some languages (${failedLanguages.join(', ')}). Data for available wikis is shown. This might be because a Wikisource project for these languages does not exist or is temporarily unavailable.`;
+                } else {
+                    state.error = null; // Clear any previous errors
+                }
+
+            } catch (err) {
+                // This catch block handles errors from Promise.all itself,
+                // which might occur if one of the promises rejected and was not caught internally.
+                state.error = "An unexpected error occurred while fetching all language statistics. Data for available wikis is shown.";
+                console.error("Promise.all aggregation error:", err);
+            } finally {
+                state.loading = false;
+                renderApp(); // Re-render the app with fetched data (or error message)
+            }
+        }
+
+        // Initial fetch and render when the DOM is fully loaded
+        document.addEventListener('DOMContentLoaded', fetchAndRenderStats);
+    </script>
+</body>
+</html>
