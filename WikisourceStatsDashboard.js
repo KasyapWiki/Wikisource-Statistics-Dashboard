@@ -12,7 +12,7 @@ const WikisourceStatsDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Define Indian languages prominently
+  // Define Indian languages prominently.
   const indianLanguages = [
     { code: 'hi', name: 'Hindi', flag: '🇮🇳' },
     { code: 'bn', name: 'Bengali', flag: '🇮🇳' },
